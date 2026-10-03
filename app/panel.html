@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>Import Tracker Panel</title>
+<style>
+  body { font-family: "Segoe UI", system-ui, sans-serif; margin: 24px; color: #1f2933; }
+  h1 { font-size: 20px; }
+  .controls { display: flex; gap: 8px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
+  .controls input[type=text] { padding: 6px 8px; width: 320px; }
+  .controls input[type=number] { padding: 6px 8px; width: 72px; }
+  .controls button { padding: 6px 14px; cursor: pointer; }
+  .cards { display: flex; gap: 12px; margin-bottom: 16px; }
+  .card { border: 1px solid #d9e2ec; border-radius: 8px; padding: 12px 20px; min-width: 120px; }
+  .card .num { font-size: 28px; font-weight: 600; }
+  .card .label { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: #627d98; }
+  .card.stdlib .num { color: #0b7285; }
+  .card.third_party .num { color: #b25d09; }
+  .card.local .num { color: #2f9e44; }
+  .meta { color: #627d98; font-size: 13px; margin-bottom: 16px; }
+  .badge { display: inline-block; border-radius: 4px; padding: 1px 6px; font-size: 11px; margin: 1px 2px; }
+  .badge.stdlib { background: #e3fafc; color: #0b7285; }
+  .badge.third_party { background: #fff3e0; color: #b25d09; }
+  .badge.local { background: #ebfbee; color: #2f9e44; }
+  details { margin-left: 16px; }
+  summary { cursor: pointer; }
+  table { border-collapse: collapse; width: 100%; margin-bottom: 24px; }
+  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid #e4ebf2; font-size: 13px; }
+  .warn { color: #c92a2a; font-weight: 600; }
+  section h2 { font-size: 15px; margin: 18px 0 8px; }
+</style>
+</head>
+<body>
+<h1>Import Tracker Panel</h1>
+<div class="controls">
+  <label>root <input type="text" id="root" value="."></label>
+  <label>depth <input type="number" id="depth" value="2" min="0" max="8"></label>
+  <label><input type="checkbox" id="force"> force</label>
+  <button id="scan">Scan</button>
+  <span id="status" class="meta"></span>
+</div>
+
+<div class="cards">
+  <div class="card stdlib"><div class="num" id="count-stdlib">0</div><div class="label">stdlib</div></div>
+  <div class="card third_party"><div class="num" id="count-third_party">0</div><div class="label">third-party</div></div>
+  <div class="card local"><div class="num" id="count-local">0</div><div class="label">local</div></div>
+</div>
+
+<div class="meta" id="meta"></div>
+
+<section>
+  <h2>模块依赖链</h2>
+  <div id="chains"></div>
+</section>
+
+<section>
+  <h2>模块</h2>
+  <table>
+    <thead><tr><th>模块</th><th>路径</th><th>imports</th></tr></thead>
+    <tbody id="modules"></tbody>
+  </table>
+</section>
+
+<script>
+function badges(imports) {
+  const tiers = ["stdlib", "third_party", "local"];
+  let html = "";
+  for (const tier of tiers) {
+    for (const name of (imports[tier] || [])) {
+      html += `<span class="badge ${tier}">${name}</span>`;
+    }
+  }
+  return html;
+}
+
+function chainNode(tree) {
+  const names = Object.keys(tree || {});
+  if (!names.length) return "";
+  let html = "";
+  for (const name of names) {
+    const children = chainNode(tree[name]);
+    if (children) {
+      html += `<details><summary>${name}</summary>${children}</details>`;
+    } else {
+      html += `<details><summary>${name}</summary></details>`;
+    }
+  }
+  return html;
+}
+
+async function runScan() {
+  const root = document.getElementById("root").value;
+  const depth = document.getElementById("depth").value;
+  const force = document.getElementById("force").checked;
+  const status = document.getElementById("status");
+  status.textContent = "scanning...";
+  const resp = await fetch(`/api/scan?root=${encodeURIComponent(root)}&depth=${depth}&force=${force}`);
+  const data = await resp.json();
+
+  document.getElementById("count-stdlib").textContent = data.counts.stdlib;
+  document.getElementById("count-third_party").textContent = data.counts.third_party;
+  document.getElementById("count-local").textContent = data.counts.local;
+
+  const meta = `root=${data.root} | files ${data.files_scanned}/${data.files_total}` +
+    ` | installed=${data.installed.source} (${data.installed.packages.length})` +
+    (data.timed_out ? ' | <span class="warn">timed out</span>' : "");
+  document.getElementById("meta").innerHTML = meta;
+
+  let chainsHtml = "";
+  for (const name of Object.keys(data.chains)) {
+    const children = chainNode(data.chains[name]);
+    chainsHtml += children
+      ? `<details><summary><strong>${name}</strong></summary>${children}</details>`
+      : `<details><summary><strong>${name}</strong></summary></details>`;
+  }
+  document.getElementById("chains").innerHTML = chainsHtml || "<span class='meta'>无本地依赖链</span>";
+
+  const tbody = document.getElementById("modules");
+  tbody.innerHTML = "";
+  for (const mod of data.modules) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${mod.name}</td><td>${mod.path}</td><td>${badges(mod.imports)}</td>`;
+    tbody.appendChild(tr);
+  }
+  status.textContent = "done";
+}
+
+document.getElementById("scan").addEventListener("click", runScan);
+runScan();
+</script>
+</body>
+</html>

@@ -1,2 +1,0 @@
-# First Party
-import alog
