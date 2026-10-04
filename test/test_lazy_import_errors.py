@@ -6,7 +6,6 @@ Tests for the lazy_import_errors functionality
 from types import ModuleType
 import os
 import pickle
-import shlex
 import subprocess
 import sys
 import tempfile
@@ -273,9 +272,11 @@ class Bar:
 """
             )
         out, _ = subprocess.Popen(
-            shlex.split(
-                f"{sys.executable} -c 'from some_module import Foo; import pickle; print(pickle.dumps(Foo()).hex())'"
-            ),
+            [
+                sys.executable,
+                "-c",
+                "from some_module import Foo; import pickle; print(pickle.dumps(Foo()).hex())",
+            ],
             stdout=subprocess.PIPE,
             env={"PYTHONPATH": workdir},
         ).communicate()

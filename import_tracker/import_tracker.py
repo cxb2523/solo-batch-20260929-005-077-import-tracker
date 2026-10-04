@@ -446,6 +446,14 @@ def _get_imports(mod: ModuleType) -> Tuple[Set[ModuleType], Set[ModuleType]]:
     if mod_code is None:
         log.debug2("No code object found for %s", mod.__name__)
         return req_imports, opt_imports
+
+    # For 3.11+, use the programmatic instruction view of the bytecode. The
+    # textual `dis` output format changed in 3.14 (offsets hidden by default,
+    # jump labels, label-based exception table), so parsing the text is no
+    # longer portable.
+    if sys.version_info >= (3, 11):
+        return _get_imports_from_instructions(mod, mod_code)
+
     bcode = dis.Bytecode(mod_code)
 
     # Parse all bytecode lines
@@ -518,6 +526,101 @@ def _get_imports(mod: ModuleType) -> Tuple[Set[ModuleType], Set[ModuleType]]:
     # To the best of my knowledge, all bytecode will end with something other
     # than an import, even if an import is the last line in the file (e.g.
     # STORE_NAME). If this somehow proves to be untrue, please file a bug!
+    assert not open_import, "Found an unclosed import in {}! {}/{}/{}".format(
+        mod.__name__,
+        current_dots,
+        current_import_name,
+        current_import_from,
+    )
+
+    return req_imports, opt_imports
+
+
+def _get_imports_from_instructions(
+    mod: ModuleType,
+    mod_code,
+) -> Tuple[Set[ModuleType], Set[ModuleType]]:
+    """Get the sets of required and optional imports for the given module by
+    walking its bytecode instructions programmatically (3.11+).
+
+    This mirrors the logic of the text-parsing variant in `_get_imports`, but
+    relies on `dis.get_instructions` and `dis.Bytecode.exception_entries`
+    instead of parsing the textual `dis` output whose format changed in 3.14.
+    """
+    req_imports = set()
+    opt_imports = set()
+
+    # Map the offset of the first instruction of each try block to the offset
+    # that ends it. Only depth-0 entries are considered, matching the legacy
+    # text-parsing behavior.
+    exception_table = {
+        entry.start: entry.end
+        for entry in dis.Bytecode(mod_code).exception_entries
+        if entry.depth == 0 and entry.start != entry.end
+    }
+    log.debug4("Exception Table: %s", exception_table)
+
+    current_dots = None
+    current_import_name = None
+    current_import_from = None
+    open_import = False
+    open_tries = set()
+
+    for instr in dis.get_instructions(mod_code):
+        log.debug4(instr)
+        op_num = instr.offset
+        opname = instr.opname
+        argval = instr.argval
+
+        # If this is the beginning of a try block, add the end to the known
+        # open try set
+        try_end = exception_table.get(op_num)
+        if try_end:
+            open_tries.add(try_end)
+            log.debug3("Open tries: %s", open_tries)
+
+        # Parse the individual ops
+        if opname in ("LOAD_CONST", "LOAD_SMALL_INT"):
+            if isinstance(argval, int) and not isinstance(argval, bool):
+                current_dots = argval
+        elif opname == "IMPORT_NAME":
+            open_import = True
+            current_import_name = argval
+        elif opname == "IMPORT_FROM":
+            open_import = True
+            current_import_from = argval
+        else:
+            # This closes an import, so figure out what the module is that is
+            # being imported!
+            if open_import:
+                import_mod = _figure_out_import(
+                    mod, current_dots, current_import_name, current_import_from
+                )
+                if import_mod is not None:
+                    log.debug2("Adding import module [%s]", import_mod.__name__)
+                    if open_tries:
+                        log.debug(
+                            "Found optional dependency of [%s]: %s",
+                            mod.__name__,
+                            import_mod.__name__,
+                        )
+                        opt_imports.add(import_mod)
+                    else:
+                        req_imports.add(import_mod)
+
+            # If this is a STORE_NAME, subsequent "from" statements may use the
+            # same dots and name
+            if opname != "STORE_NAME":
+                current_dots = None
+                current_import_name = None
+            open_import = False
+            current_import_from = None
+
+        # Close the open try if this ends one
+        if op_num in open_tries:
+            open_tries.remove(op_num)
+            log.debug3("Closed try %d. Remaining open tries: %s", op_num, open_tries)
+
     assert not open_import, "Found an unclosed import in {}! {}/{}/{}".format(
         mod.__name__,
         current_dots,

@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Import Tracker Panel</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, sans-serif; margin: 2rem; }
+  h1 { font-size: 1.4rem; }
+  form { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; margin-bottom: 1rem; }
+  input, button { font: inherit; padding: .3rem .5rem; }
+  #root { width: 24rem; }
+  #depth { width: 4rem; }
+  .cards { display: flex; gap: 1rem; margin: 1rem 0; }
+  .card { border: 1px solid #8884; border-radius: 8px; padding: .8rem 1.2rem; min-width: 8rem; }
+  .card .num { font-size: 1.8rem; font-weight: 700; }
+  .card .label { opacity: .7; }
+  .meta { opacity: .7; font-size: .85rem; margin-bottom: 1rem; }
+  details { margin-left: 1rem; }
+  summary { cursor: pointer; }
+  .dep { font-family: ui-monospace, monospace; }
+  #error { color: #c00; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<h1>Import Tracker Panel</h1>
+<form id="controls">
+  <label>Root <input id="root" value="%%ROOT%%"></label>
+  <label>Depth <input id="depth" type="number" min="0" value="%%DEPTH%%"></label>
+  <label><input id="force" type="checkbox"> force</label>
+  <button type="submit">Scan</button>
+</form>
+<div id="error"></div>
+<div class="cards">
+  <div class="card"><div class="num" id="count-stdlib">-</div><div class="label">stdlib</div></div>
+  <div class="card"><div class="num" id="count-third_party">-</div><div class="label">third_party</div></div>
+  <div class="card"><div class="num" id="count-local">-</div><div class="label">local</div></div>
+</div>
+<div class="meta" id="meta"></div>
+<h2>Module dependency chains</h2>
+<div id="chains"></div>
+<script>
+window.__INITIAL_DATA__ = %%INITIAL_DATA%%;
+window.__INITIAL_ERROR__ = %%INITIAL_ERROR%%;
+
+function renderChains(chains) {
+  const deps = new Map(chains.map(c => [c.module, c.depends_on]));
+  function node(name, seen) {
+    const children = (deps.get(name) || []).filter(d => !seen.has(d));
+    if (!children.length) {
+      const li = document.createElement("li");
+      li.innerHTML = '<span class="dep"></span>';
+      li.firstChild.textContent = name;
+      return li;
+    }
+    const li = document.createElement("li");
+    const det = document.createElement("details");
+    const sum = document.createElement("summary");
+    sum.innerHTML = '<span class="dep"></span>';
+    sum.firstChild.textContent = name + " (" + children.length + ")";
+    det.appendChild(sum);
+    const ul = document.createElement("ul");
+    const nextSeen = new Set(seen); nextSeen.add(name);
+    for (const child of children) ul.appendChild(node(child, nextSeen));
+    det.appendChild(ul);
+    li.appendChild(det);
+    return li;
+  }
+  const rootUl = document.createElement("ul");
+  for (const chain of chains) rootUl.appendChild(node(chain.module, new Set()));
+  return rootUl;
+}
+
+function render(data) {
+  document.getElementById("count-stdlib").textContent = data.counts.stdlib;
+  document.getElementById("count-third_party").textContent = data.counts.third_party;
+  document.getElementById("count-local").textContent = data.counts.local;
+  document.getElementById("meta").textContent =
+    "root: " + data.root + " | depth: " + data.depth +
+    " | files: " + data.file_count +
+    " | probe: " + (data.probe.degraded ? "degraded (static table)" : "live") +
+    " (" + data.probe.installed_count + " packages, ttl " + data.probe.ttl_seconds + "s)";
+  const container = document.getElementById("chains");
+  container.textContent = "";
+  container.appendChild(renderChains(data.chains));
+}
+
+function showError(message) {
+  document.getElementById("error").textContent = message || "";
+}
+
+async function runScan(event) {
+  if (event) event.preventDefault();
+  showError("");
+  const params = new URLSearchParams({
+    root: document.getElementById("root").value,
+    depth: document.getElementById("depth").value,
+    force: document.getElementById("force").checked ? "true" : "false",
+  });
+  const resp = await fetch("/api/scan?" + params.toString());
+  const data = await resp.json();
+  if (!resp.ok) { showError(data.detail || resp.statusText); return; }
+  render(data);
+}
+
+document.getElementById("controls").addEventListener("submit", runScan);
+if (window.__INITIAL_DATA__) render(window.__INITIAL_DATA__);
+else if (window.__INITIAL_ERROR__) showError(window.__INITIAL_ERROR__);
+</script>
+</body>
+</html>
